@@ -1,9 +1,13 @@
 use poise::serenity_prelude as serenity;
 
+use sqlite;
+
 type Error = Box<dyn std::error::Error + Send + Sync>;
 type Context<'a> = poise::Context<'a, Data, Error>;
 // User data, which is stored and accessible in all command invocations
 struct Data {}
+
+thread_local!(static conn: sqlite::Connection = sqlite::open(":memory:").unwrap());
 
 /// Displays your or another user's account creation date
 #[poise::command(slash_command, prefix_command)]
@@ -23,6 +27,16 @@ async fn register(ctx: Context<'_>) -> Result<(), Error> {
     Ok(())
 }
 
+#[poise::command(slash_command, prefix_command)]
+async fn adduser(
+    ctx: Context<'_>,
+    #[description = "Email"] email: String,
+    #[description = "Password"] password: String,
+) -> Result<(), Error> {
+    ctx.say(format!("{}, {}", email, password)).await?;
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() {
     let framework = poise::Framework::builder()
@@ -31,13 +45,14 @@ async fn main() {
                 prefix: Some(String::from("~")),
                 ..Default::default()
             },
-            commands: vec![age(), register()],
+            commands: vec![age(), register(), adduser()],
             ..Default::default()
         })
         .token(String::from(include_str!("../token.txt")))
         .intents(
             serenity::GatewayIntents::non_privileged()
                 | serenity::GatewayIntents::GUILD_MESSAGES
+                | serenity::GatewayIntents::DIRECT_MESSAGES
                 | serenity::GatewayIntents::MESSAGE_CONTENT,
         )
         .user_data_setup(move |_ctx, _ready, _framework| Box::pin(async move { Ok(Data {}) }));

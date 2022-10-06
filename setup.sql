@@ -1,0 +1,5 @@
+CREATE TABLE users (
+    email TEXT NOT NULL, 
+    pass TEXT NOT NULL, 
+    id TEXT NOT NULL UNIQUE PRIMARY KEY
+);
