@@ -1,30 +1,26 @@
 use poise::serenity_prelude as serenity;
 
-use sqlite;
+use rusqlite;
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
 type Context<'a> = poise::Context<'a, Data, Error>;
 // User data, which is stored and accessible in all command invocations
 struct Data {}
 
-thread_local!(static conn: sqlite::Connection = sqlite::open(":memory:").unwrap());
-
-/// Displays your or another user's account creation date
-#[poise::command(slash_command, prefix_command)]
-async fn age(
-    ctx: Context<'_>,
-    #[description = "Selected user"] user: Option<serenity::User>,
-) -> Result<(), Error> {
-    let u = user.as_ref().unwrap_or_else(|| ctx.author());
-    let response = format!("{}'s account was created at {}", u.name, u.created_at());
-    ctx.say(response).await?;
-    Ok(())
-}
+thread_local!(static CONN: rusqlite::Connection = rusqlite::Connection::open("DB.db").unwrap());
 
 #[poise::command(prefix_command)]
 async fn register(ctx: Context<'_>) -> Result<(), Error> {
     poise::builtins::register_application_commands_buttons(ctx).await?;
     Ok(())
+}
+
+async fn eph_reply<'a>(
+    ctx: Context<'a>,
+    msg: impl ToString,
+) -> Result<poise::ReplyHandle<'a>, serenity::Error> {
+    ctx.send(|r| r.content(msg.to_string()).ephemeral(true))
+        .await
 }
 
 #[poise::command(slash_command, prefix_command)]
@@ -33,7 +29,30 @@ async fn adduser(
     #[description = "Email"] email: String,
     #[description = "Password"] password: String,
 ) -> Result<(), Error> {
-    ctx.say(format!("{}, {}", email, password)).await?;
+    match CONN.with(|c| {
+        c.execute(
+            "INSERT INTO users VALUES (?, ?, ?)",
+            (&email, &password, &ctx.author().id.to_string()),
+        )
+    }) {
+        Ok(_) => {}
+        Err(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error {
+                code: rusqlite::ErrorCode::ConstraintViolation,
+                extended_code: _,
+            },
+            m,
+        )) => {
+            eph_reply(ctx, "oopy daisy").await?;
+            return Ok(());
+        }
+        Err(e) => {
+            eprintln!("DB Error: {}", e);
+            eph_reply(ctx, format!("Database error occured: {}", e)).await?;
+            return Ok(());
+        }
+    }
+    ctx.say(format!("HI. {}, {}", email, password)).await?;
     Ok(())
 }
 
@@ -45,7 +64,7 @@ async fn main() {
                 prefix: Some(String::from("~")),
                 ..Default::default()
             },
-            commands: vec![age(), register(), adduser()],
+            commands: vec![register(), adduser()],
             ..Default::default()
         })
         .token(String::from(include_str!("../token.txt")))

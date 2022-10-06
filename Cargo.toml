@@ -8,4 +8,5 @@ edition = "2021"
 [dependencies]
 poise = "0.3"
 tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }
-sqlite = "0.27"
+rusqlite = { version = "0.28", features = ["bundled"] }
+
