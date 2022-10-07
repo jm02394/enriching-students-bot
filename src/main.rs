@@ -29,28 +29,27 @@ async fn adduser(
     #[description = "Email"] email: String,
     #[description = "Password"] password: String,
 ) -> Result<(), Error> {
-    match CONN.with(|c| {
+    let r = CONN.with(|c| {
         c.execute(
             "INSERT INTO users VALUES (?, ?, ?)",
             (&email, &password, &ctx.author().id.to_string()),
         )
-    }) {
-        Ok(_) => {}
-        Err(rusqlite::Error::SqliteFailure(
-            rusqlite::ffi::Error {
-                code: rusqlite::ErrorCode::ConstraintViolation,
-                extended_code: _,
-            },
-            m,
-        )) => {
-            eph_reply(ctx, "oopy daisy").await?;
-            return Ok(());
-        }
-        Err(e) => {
-            eprintln!("DB Error: {}", e);
-            eph_reply(ctx, format!("Database error occured: {}", e)).await?;
-            return Ok(());
-        }
+    });
+    if let Err(rusqlite::Error::SqliteFailure(
+        rusqlite::ffi::Error {
+            code: rusqlite::ErrorCode::ConstraintViolation,
+            extended_code: _,
+        },
+        m,
+    )) = r
+    {
+        eph_reply(ctx, "oopy daisy").await?;
+        return Ok(());
+    }
+    if let Err(e) = r {
+        eprintln!("DB Error: {}", e);
+        eph_reply(ctx, format!("Database error occured: {}", e)).await?;
+        return Ok(());
     }
     ctx.say(format!("HI. {}, {}", email, password)).await?;
     Ok(())
