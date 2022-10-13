@@ -35,6 +35,13 @@ struct LoginResponse2 {
     auth_token: String,
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ScheduleInfo {
+    period_description: String,
+    course_name: String,
+}
+
 struct API {
     s: reqwest::Client,
     email: String,
@@ -85,7 +92,51 @@ impl API {
         self.token = Some(r2.auth_token);
 
         //println!("{:?}", r2.json::<serde_json::Value>().await);
-        return Ok(());
+        Ok(())
+    }
+
+    async fn get_class(self, date: String) -> Result<String, reqwest::Error> {
+        let r = self
+            .s
+            .post(BASE2.to_owned() + "/v1.0/appointment/viewschedule")
+            .json(&HashMap::from([("startDate", date)]))
+            .headers(self.headers())
+            .send()
+            .await?
+            .json::<Vec<ScheduleInfo>>()
+            .await
+            .unwrap();
+
+        let rf = r
+            .into_iter()
+            .filter(|x| x.period_description == "Centaur Plus Enrichment")
+            .collect::<Vec<ScheduleInfo>>();
+        if rf.len() > 1 {
+            panic!("major issue!!!")
+        }
+
+        Ok(rf.into_iter().nth(0).unwrap().course_name)
+    }
+
+    async fn schedule(
+        self,
+        date: String,
+        cid: String,
+        comment: String,
+    ) -> Result<(), reqwest::Error> {
+        let r = self
+            .s
+            .post(BASE2.to_string() + "/v1.0/appointment/save")
+            .json(&HashMap::from([
+                ("courseId", serde_json::Value::String(cid)),
+                ("periodId", serde_json::Value::Number(1.into())),
+                ("scheduleDate", serde_json::Value::String(date)),
+                ("schedulerComment", serde_json::Value::String(comment)),
+            ]))
+            .headers(self.headers())
+            .send()
+            .await?;
+        Ok(())
     }
 
     fn headers(self) -> reqwest::header::HeaderMap {
@@ -95,19 +146,11 @@ impl API {
         map.insert("ESAuthToken", self.token.unwrap()[..].parse().unwrap());
         map.insert(
             "Referer",
-            format!("{}{}", BASE2, "/dashboard")[..].parse().unwrap(),
+            (BASE2.to_owned() + "/dashboard")[..].parse().unwrap(),
         );
 
         map
     }
-}
-
-thread_local!(static CONN: rusqlite::Connection = rusqlite::Connection::open("DB.db").unwrap());
-
-#[poise::command(prefix_command)]
-async fn register(ctx: Context<'_>) -> Result<(), Error> {
-    poise::builtins::register_application_commands_buttons(ctx).await?;
-    Ok(())
 }
 
 async fn eph_reply<'a>(
@@ -118,56 +161,84 @@ async fn eph_reply<'a>(
         .await
 }
 
+thread_local!(static CONN: rusqlite::Connection = rusqlite::Connection::open("DB.db").unwrap());
+
+#[poise::command(prefix_command)]
+async fn registercmds(ctx: Context<'_>) -> Result<(), Error> {
+    poise::builtins::register_application_commands_buttons(ctx).await?;
+    Ok(())
+}
+
 #[poise::command(slash_command, prefix_command)]
-async fn adduser(
+async fn register(
     ctx: Context<'_>,
     #[description = "Email"] email: String,
     #[description = "Password"] password: String,
 ) -> Result<(), Error> {
     let r = CONN.with(|c| {
         c.execute(
-            "INSERT INTO users VALUES (?, ?, ?)",
+            "INSERT INTO users VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET email=excluded.email, pass=excluded.pass",
             (&email, &password, &ctx.author().id.to_string()),
         )
     });
-    if let Err(rusqlite::Error::SqliteFailure(
-        rusqlite::ffi::Error {
-            code: rusqlite::ErrorCode::ConstraintViolation,
-            extended_code: _,
-        },
-        _m,
-    )) = r
-    {
-        eph_reply(ctx, "oopy daisy").await?;
-        return Ok(());
-    }
     if let Err(e) = r {
         eprintln!("DB Error: {}", e);
         eph_reply(ctx, format!("Database error occured: {}", e)).await?;
         return Ok(());
     }
-    ctx.say(format!("HI. {}, {}", email, password)).await?;
+    eph_reply(ctx, format!("HI. {}, {}", email, password)).await?;
     Ok(())
+}
+
+#[poise::command(slash_command, prefix_command)]
+async fn schedule(
+    ctx: Context<'_>,
+    #[description = "classid"] cid: String,
+    #[description = "comment"] comment: String,
+) -> Result<(), Error> {
+    let (email, password) = getuser(ctx.author().id.to_string());
+    let api = API::new(email, password);
+
+    api.schedule("2022-10-19".to_string(), cid, "".to_string())
+        .await?;
+
+    Ok(())
+}
+
+#[poise::command(slash_command, prefix_command)]
+async fn getclass(ctx: Context<'_>) -> Result<(), Error> {
+    let (email, password) = getuser(ctx.author().id.to_string());
+    let mut api = API::new(email, password);
+    api.login().await.expect("error");
+    eph_reply(
+        ctx,
+        format!(
+            "You are scheduled for {} on that day.",
+            api.get_class("2022-10-12".to_string()).await.unwrap()
+        ),
+    )
+    .await?;
+    Ok(())
+}
+
+fn getuser(id: String) -> (String, String) {
+    CONN.with(|c| {
+        c.query_row("SELECT email, pass FROM users WHERE id=?", [id], |row| {
+            Ok((row.get_unwrap(0), row.get_unwrap(1)))
+        })
+    })
+    .unwrap()
 }
 
 #[tokio::main]
 async fn main() {
-    let mut api = API::new(
-        include_str!("../email.txt").to_string(),
-        include_str!("../password.txt").to_string(),
-    );
-    api.login().await.expect("error");
-    println!("it worked");
-
-    unreachable!();
-
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
             prefix_options: poise::PrefixFrameworkOptions {
                 prefix: Some(String::from("~")),
                 ..Default::default()
             },
-            commands: vec![register(), adduser()],
+            commands: vec![registercmds(), register(), getclass(), schedule()],
             ..Default::default()
         })
         .token(String::from(include_str!("../token.txt")))
