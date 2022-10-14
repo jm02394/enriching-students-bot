@@ -103,8 +103,7 @@ impl API {
             .send()
             .await?
             .json::<LoginResponse>()
-            .await
-            .unwrap();
+            .await?;
 
         let r2 = self
             .s
@@ -116,8 +115,7 @@ impl API {
             .send()
             .await?
             .json::<LoginResponse2>()
-            .await
-            .unwrap();
+            .await?;
 
         self.token = Some(r2.auth_token);
 
@@ -134,8 +132,7 @@ impl API {
             .send()
             .await?
             .json::<Vec<ScheduleInfo>>()
-            .await
-            .unwrap();
+            .await?;
 
         let rf = r
             .into_iter()
@@ -148,7 +145,7 @@ impl API {
         Ok(rf.into_iter().nth(0).unwrap().course_name)
     }
 
-    async fn get_course_id(&self, course_name: String, date: String) -> Result<u64, APIError> {
+    async fn get_course_id(&self, date: String, course_name: String) -> Result<u64, APIError> {
         let r = self
             .s
             .post(BASE2.to_owned() + "/v1.0/course/forstudentscheduling")
@@ -160,12 +157,9 @@ impl API {
             .send()
             .await?
             .json::<CourseInfoResponse>()
-            .await
-            .unwrap();
+            .await?;
 
-        println!("{}", r.courses.len());
         for x in r.courses {
-            println!("{}", x.course_name);
             if x.course_name == course_name {
                 return Ok(x.course_id);
             }
@@ -255,10 +249,7 @@ async fn schedule(
     let (email, password) = getuser(ctx.author().id.to_string());
     let mut api = API::new(email, password);
     api.login().await.expect("error");
-    let cid = api
-        .get_course_id(date.clone(), course_name.clone())
-        .await
-        .unwrap();
+    let cid = api.get_course_id(date.clone(), course_name.clone()).await?;
     api.schedule(date.clone(), cid, comment).await?;
     eph_reply(
         ctx,
@@ -269,7 +260,7 @@ async fn schedule(
 }
 
 #[poise::command(slash_command, prefix_command)]
-async fn getclass(ctx: Context<'_>, #[description = "Date"] date: String) -> Result<(), Error> {
+async fn getcourse(ctx: Context<'_>, #[description = "Date"] date: String) -> Result<(), Error> {
     let (email, password) = getuser(ctx.author().id.to_string());
     let mut api = API::new(email, password);
     api.login().await.expect("error");
@@ -302,7 +293,7 @@ async fn main() {
                 prefix: Some(String::from("~")),
                 ..Default::default()
             },
-            commands: vec![registercmds(), register(), getclass(), schedule()],
+            commands: vec![registercmds(), register(), getcourse(), schedule()],
             ..Default::default()
         })
         .token(String::from(include_str!("../token.txt")))
