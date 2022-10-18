@@ -186,7 +186,7 @@ async fn register(
         eph_reply(ctx, format!("Database error occured: {}", e)).await?;
         return Ok(());
     }
-    eph_reply(ctx, format!("HI. {}, {}", email, password)).await?;
+    eph_reply(ctx, "Hi".to_string()).await?;
     Ok(())
 }
 
@@ -197,10 +197,12 @@ async fn schedule(
     #[description = "comment"] comment: String,
 ) -> Result<(), Error> {
     let (email, password) = getuser(ctx.author().id.to_string());
-    let api = API::new(email, password);
+    let mut api = API::new(email, password);
+    api.login().await.expect("error");
 
     api.schedule("2022-10-19".to_string(), cid, "".to_string())
         .await?;
+    eph_reply(ctx, "scheduled successfully".to_string());
 
     Ok(())
 }
