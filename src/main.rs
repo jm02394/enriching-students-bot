@@ -1,5 +1,6 @@
 use poise::serenity_prelude as serenity;
 use std::collections::HashMap;
+use thiserror::Error;
 
 use reqwest;
 use rusqlite;
@@ -42,6 +43,35 @@ struct ScheduleInfo {
     course_name: String,
 }
 
+#[derive(serde::Deserialize)]
+struct CourseInfoResponse {
+    courses: Vec<CourseInfo>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CourseInfo {
+    blocked_reason: Option<String>,
+    prevent_student_self_scheduling: bool,
+    is_open_for_scheduling: bool,
+    course_id: u64,
+    course_name: String,
+    staff_last_name: String,
+    staff_first_name: String,
+    course_room: String,
+    max_number_students: u64,
+    number_of_appointments: u64,
+    appointment_request_course_id: u64,
+}
+
+#[derive(Error, Debug)]
+enum APIError {
+    #[error("reqwest error")]
+    ReqwestError(#[from] reqwest::Error),
+    #[error("api error")]
+    APIError(String),
+}
+
 struct API {
     s: reqwest::Client,
     email: String,
@@ -73,8 +103,7 @@ impl API {
             .send()
             .await?
             .json::<LoginResponse>()
-            .await
-            .unwrap();
+            .await?;
 
         let r2 = self
             .s
@@ -86,8 +115,7 @@ impl API {
             .send()
             .await?
             .json::<LoginResponse2>()
-            .await
-            .unwrap();
+            .await?;
 
         self.token = Some(r2.auth_token);
 
@@ -95,7 +123,7 @@ impl API {
         Ok(())
     }
 
-    async fn get_class(self, date: String) -> Result<String, reqwest::Error> {
+    async fn get_course(self, date: String) -> Result<String, reqwest::Error> {
         let r = self
             .s
             .post(BASE2.to_owned() + "/v1.0/appointment/viewschedule")
@@ -104,8 +132,7 @@ impl API {
             .send()
             .await?
             .json::<Vec<ScheduleInfo>>()
-            .await
-            .unwrap();
+            .await?;
 
         let rf = r
             .into_iter()
@@ -118,17 +145,34 @@ impl API {
         Ok(rf.into_iter().nth(0).unwrap().course_name)
     }
 
-    async fn schedule(
-        self,
-        date: String,
-        cid: String,
-        comment: String,
-    ) -> Result<(), reqwest::Error> {
+    async fn get_course_id(&self, date: String, course_name: String) -> Result<u64, APIError> {
+        let r = self
+            .s
+            .post(BASE2.to_owned() + "/v1.0/course/forstudentscheduling")
+            .json(&HashMap::from([
+                ("periodId", serde_json::Value::Number(1.into())),
+                ("startDate", serde_json::Value::String(date)),
+            ]))
+            .headers(self.headers())
+            .send()
+            .await?
+            .json::<CourseInfoResponse>()
+            .await?;
+
+        for x in r.courses {
+            if x.course_name == course_name {
+                return Ok(x.course_id);
+            }
+        }
+        Err(APIError::APIError("course not found".to_string()))
+    }
+
+    async fn schedule(self, date: String, cid: u64, comment: String) -> Result<(), reqwest::Error> {
         let r = self
             .s
             .post(BASE2.to_string() + "/v1.0/appointment/save")
             .json(&HashMap::from([
-                ("courseId", serde_json::Value::String(cid)),
+                ("courseId", serde_json::Value::Number(cid.into())),
                 ("periodId", serde_json::Value::Number(1.into())),
                 ("scheduleDate", serde_json::Value::String(date)),
                 ("schedulerComment", serde_json::Value::String(comment)),
@@ -139,11 +183,16 @@ impl API {
         Ok(())
     }
 
-    fn headers(self) -> reqwest::header::HeaderMap {
+    fn headers(&self) -> reqwest::header::HeaderMap {
         let mut map = reqwest::header::HeaderMap::new();
 
         map.insert("User-Agent", UA.parse().unwrap());
-        map.insert("ESAuthToken", self.token.unwrap()[..].parse().unwrap());
+        map.insert(
+            "ESAuthToken",
+            self.token.clone().expect("missing token")[..]
+                .parse()
+                .unwrap(),
+        );
         map.insert(
             "Referer",
             (BASE2.to_owned() + "/dashboard")[..].parse().unwrap(),
@@ -193,30 +242,34 @@ async fn register(
 #[poise::command(slash_command, prefix_command)]
 async fn schedule(
     ctx: Context<'_>,
-    #[description = "classid"] cid: String,
-    #[description = "comment"] comment: String,
+    #[description = "Course Name"] course_name: String,
+    #[description = "Date"] date: String,
+    #[description = "Comment"] comment: String,
 ) -> Result<(), Error> {
     let (email, password) = getuser(ctx.author().id.to_string());
     let mut api = API::new(email, password);
     api.login().await.expect("error");
-
-    api.schedule("2022-10-19".to_string(), cid, "".to_string())
-        .await?;
-    eph_reply(ctx, "scheduled successfully".to_string());
-
+    let cid = api.get_course_id(date.clone(), course_name.clone()).await?;
+    api.schedule(date.clone(), cid, comment).await?;
+    eph_reply(
+        ctx,
+        format!("You are scheduled for {} on {}.", course_name, date),
+    )
+    .await?;
     Ok(())
 }
 
 #[poise::command(slash_command, prefix_command)]
-async fn getclass(ctx: Context<'_>) -> Result<(), Error> {
+async fn getcourse(ctx: Context<'_>, #[description = "Date"] date: String) -> Result<(), Error> {
     let (email, password) = getuser(ctx.author().id.to_string());
     let mut api = API::new(email, password);
     api.login().await.expect("error");
     eph_reply(
         ctx,
         format!(
-            "You are scheduled for {} on that day.",
-            api.get_class("2022-10-12".to_string()).await.unwrap()
+            "You are scheduled for {} on {}.",
+            api.get_course(date.clone()).await.unwrap(),
+            &date
         ),
     )
     .await?;
@@ -240,7 +293,7 @@ async fn main() {
                 prefix: Some(String::from("~")),
                 ..Default::default()
             },
-            commands: vec![registercmds(), register(), getclass(), schedule()],
+            commands: vec![registercmds(), register(), getcourse(), schedule()],
             ..Default::default()
         })
         .token(String::from(include_str!("../token.txt")))
